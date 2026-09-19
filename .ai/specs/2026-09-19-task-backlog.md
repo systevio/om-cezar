@@ -39,7 +39,7 @@ composer), gated behind the off-by-default `CEZ_FOLLOWUPS` capability, and
 carries none of a task's composer fields (runner, model, agent profile,
 attachments).
 
-Matt (issue #4) wants to prepare the next piece of work while the current one
+Kuba (issue #4) wants to prepare the next piece of work while the current one
 is still running, without it consuming a worktree or a concurrency slot, or
 appearing as an active/queued run.
 
@@ -234,7 +234,7 @@ to issue #4 and the Resolved assumptions below.
   Independently shippable and is this spec's full scope.
 - **Phase 2 (not in this spec)** — variants/dispatch-tree roots from a
   backlog item, inline editing before Start, and any dependency-between-tasks
-  modeling, should Matt confirm that's wanted after living with Phase 1.
+  modeling, should Kuba confirm that's wanted after living with Phase 1.
 
 ## 📋 Implementation Plan
 
