@@ -117,7 +117,7 @@ export function TasksOverview({
   backlogItems,
   onStartBacklogItem,
   onDeleteBacklogItem,
-  startingBacklogId,
+  startingBacklogIds,
 }: {
   /** Undefined while `/api/runs` has not answered: the header renders, the body stays empty —
    *  an empty state before we know there are no runs would be a lie. */
@@ -156,7 +156,7 @@ export function TasksOverview({
   backlogItems?: BacklogItem[]
   onStartBacklogItem?: (id: string) => void
   onDeleteBacklogItem?: (id: string) => void
-  startingBacklogId?: string | null
+  startingBacklogIds?: ReadonlySet<string>
 }) {
   const [query, setQuery] = React.useState('')
   const all = runs ?? []
@@ -263,7 +263,7 @@ export function TasksOverview({
             items={backlogItems}
             onStart={(id) => onStartBacklogItem?.(id)}
             onDelete={(id) => onDeleteBacklogItem?.(id)}
-            startingId={startingBacklogId}
+            startingIds={startingBacklogIds}
             now={now}
           />
         ) : runs === undefined ? null : visible.length === 0 ? (
@@ -1152,17 +1152,26 @@ export function TasksOverviewRoute() {
   const [searchParams] = useSearchParams()
   const [showBacklog, setShowBacklog] = React.useState(() => searchParams.get('view') === 'backlog')
   const backlog = useBacklog()
-  const [startingBacklogId, setStartingBacklogId] = React.useState<string | null>(null)
+  // A SET, not one id: starting item B while item A's request is still in flight must not
+  // re-enable A's row (a scalar "the one starting id" would, letting a quick second click on A
+  // race the server's own documented double-Start window).
+  const [startingBacklogIds, setStartingBacklogIds] = React.useState<ReadonlySet<string>>(new Set())
   const startItem = useMutation({
     mutationFn: startBacklogItem,
-    onMutate: (id: string) => setStartingBacklogId(id),
+    onMutate: (id: string) => setStartingBacklogIds((prev) => new Set(prev).add(id)),
     onSuccess: (run) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.backlog })
       void queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
       navigate(startedRunPath(run))
     },
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
-    onSettled: () => setStartingBacklogId(null),
+    onSettled: (_data, _error, id) =>
+      setStartingBacklogIds((prev) => {
+        if (!prev.has(id)) return prev
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      }),
   })
   const deleteItem = useMutation({
     mutationFn: removeBacklogItem,
@@ -1235,7 +1244,7 @@ export function TasksOverviewRoute() {
         backlogItems={backlog.data}
         onStartBacklogItem={(id) => startItem.mutate(id)}
         onDeleteBacklogItem={(id) => deleteItem.mutate(id)}
-        startingBacklogId={startingBacklogId}
+        startingBacklogIds={startingBacklogIds}
       />
     </ReferenceStatusProvider>
   )

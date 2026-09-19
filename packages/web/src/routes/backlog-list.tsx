@@ -15,7 +15,7 @@ export function BacklogList({
   items,
   onStart,
   onDelete,
-  startingId,
+  startingIds,
   now = Date.now(),
 }: {
   /** `undefined` while `GET /api/backlog` has not answered yet — the list renders nothing rather
@@ -23,9 +23,13 @@ export function BacklogList({
   items: BacklogItem[] | undefined
   onStart: (id: string) => void
   onDelete: (id: string) => void
-  /** The item currently mid-Start — its row's actions disable so a slow request can't be fired
-   *  twice from the same row. */
-  startingId?: string | null
+  /**
+   * Every item currently mid-Start — a SET, not a single id, so starting item B while item A's
+   * request is still in flight cannot re-enable A's row (a scalar "the one starting id" would:
+   * setting it to B un-disables A even though A's own request hasn't settled, and a quick second
+   * click on A would race the server's own documented double-Start window).
+   */
+  startingIds?: ReadonlySet<string>
   now?: number
 }) {
   if (items === undefined) return null
@@ -45,7 +49,7 @@ export function BacklogList({
   return (
     <ul data-slot="backlog-list" className="flex flex-col gap-1.5">
       {items.map((item) => {
-        const busy = startingId === item.id
+        const busy = startingIds?.has(item.id) ?? false
         return (
           <li
             key={item.id}

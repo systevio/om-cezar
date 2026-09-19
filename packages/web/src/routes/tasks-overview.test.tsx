@@ -900,6 +900,22 @@ describe('TasksOverview — Backlog tab (spec 2026-09-19-task-backlog)', () => {
     expect(onDeleteBacklogItem).toHaveBeenCalledWith('b1')
   })
 
+  it('disables only the starting row — a Set, so a second in-flight Start never re-enables the first', () => {
+    // Regression: a single scalar "the one starting id" would flip to 'b' and re-enable 'a'
+    // even though its own request has not settled. Two items, only 'a' in flight: 'a' disabled,
+    // 'b' still clickable.
+    renderOverview({
+      backlogView: true,
+      onBacklogViewChange: vi.fn(),
+      backlogItems: [backlogItem({ id: 'a', title: 'First' }), backlogItem({ id: 'b', title: 'Second' })],
+      startingBacklogIds: new Set(['a']),
+    })
+    const starts = screen.getAllByRole('button', { name: 'Start' }) as HTMLButtonElement[]
+    expect(starts).toHaveLength(2)
+    expect(starts[0]?.disabled).toBe(true) // 'First' (a) — mid-flight
+    expect(starts[1]?.disabled).toBe(false) // 'Second' (b) — untouched
+  })
+
   it('shows the empty state once the list has answered empty', () => {
     renderOverview({ backlogView: true, onBacklogViewChange: vi.fn(), backlogItems: [] })
     expect(screen.getByText('Nothing backlogged yet')).toBeTruthy()

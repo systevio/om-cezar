@@ -537,6 +537,9 @@ export function NewTaskRoute() {
         worktree: worktreeOn,
         autonomous: autonomousOn,
         generateFollowups: generateFollowupsOn,
+        // #374, carried through the backlog detour: the entry leaves the inbox once Start
+        // actually creates the run (`item.input.todoId`, read by `POST .../:id/start`).
+        todoId: deepLink.todo,
       }),
     )
     void queryClient.invalidateQueries({ queryKey: queryKeys.backlog })
@@ -635,7 +638,10 @@ export function NewTaskRoute() {
         <Composer
           ref={composerRef}
           onSubmit={submit}
-          onSaveToBacklog={saveToBacklog}
+          // Plan-first mode routes Start through plan review before anything runs — a backlog
+          // item has no equivalent "review before Start" state, so saving one would silently
+          // skip the review the user explicitly opted into for this composer.
+          onSaveToBacklog={draft.planFirst ? undefined : saveToBacklog}
           value={draft.text}
           onValueChange={(text) => update({ text })}
           autoFocus
