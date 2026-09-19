@@ -4,6 +4,7 @@
 import { runnerDiscoversModels } from '@open-mercato/cezar-api-client'
 import type {
   BackendCheck,
+  CreateBacklogItemInput,
   CreateRunInput,
   CreateRunResponse,
   AttachmentInput,
@@ -367,6 +368,55 @@ export function buildCreateRunBody(opts: {
     generateFollowups: generateFollowups === false ? false : undefined,
     todoId: todoId || undefined,
     dispatch: dispatch ?? undefined,
+  }
+}
+
+/**
+ * The `POST /api/backlog` body for the composer's "Save to backlog" button (spec
+ * 2026-09-19-task-backlog) — `buildCreateRunBody` minus `variants`/`dispatch` (Phase 2, not in
+ * this spec) and `todoId` (a backlog detour still marks the originating inbox entry started, but
+ * only once "▶ Start" actually creates the run — see `startBacklogItem`, not at save time).
+ */
+export function buildBacklogItemBody(opts: {
+  task: string
+  source: TaskSource | null
+  model: string
+  modelsLocked?: boolean
+  runner: Runner
+  runnerExplicit?: boolean
+  defaultRunner?: Runner
+  agentProfile?: string | null
+  images: readonly AttachmentInput[]
+  worktree?: boolean
+  autonomous?: boolean
+  generateFollowups?: boolean
+}): CreateBacklogItemInput {
+  const {
+    task,
+    source,
+    model,
+    modelsLocked,
+    runner,
+    runnerExplicit,
+    defaultRunner,
+    agentProfile,
+    images,
+    worktree,
+    autonomous,
+    generateFollowups,
+  } = opts
+  return {
+    task,
+    ...(source?.source === 'skill'
+      ? { steps: [{ id: 'task', name: source.ref, skill: source.ref, prompt: '{{task}}' }] }
+      : { workflow: source?.ref ?? QUICK_TASK }),
+    model: modelsLocked ? undefined : model || undefined,
+    runner: runnerOverride(runner, defaultRunner, runnerExplicit),
+    agentProfile: agentProfile || undefined,
+    images: images.length > 0 ? [...images] : undefined,
+    worktree: worktree === false ? false : undefined,
+    autonomous: autonomous === true ? true : undefined,
+    generateFollowups: generateFollowups === false ? false : undefined,
   }
 }
 

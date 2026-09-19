@@ -6,6 +6,7 @@ import type { BackendCheck, Skill, WorkflowDef } from '@open-mercato/cezar-api-c
 import {
   buildAutomationTask,
   availableRunners,
+  buildBacklogItemBody,
   buildCreateRunBody,
   MODELS_BY_RUNNER,
   modelsForRunner,
@@ -387,6 +388,64 @@ describe('buildCreateRunBody — the exact POST /api/v1/runs payloads legacy sen
     })
     expect(body.variants).toBe(3)
     expect(body.images).toEqual([{ mediaType: 'image/png', data: 'aGk=' }])
+  })
+})
+
+describe('buildBacklogItemBody (spec 2026-09-19-task-backlog) — POST /api/v1/backlog payload', () => {
+  it('carries the same workflow XOR steps rule buildCreateRunBody does, minus variants/dispatch', () => {
+    const body = buildBacklogItemBody({
+      task: 'write the release notes',
+      source: { source: 'workflow', ref: 'quick-task' },
+      model: '',
+      runner: 'claude',
+      defaultRunner: 'claude',
+      images: [],
+    })
+    expect(JSON.parse(JSON.stringify(body))).toEqual({
+      task: 'write the release notes',
+      workflow: 'quick-task',
+    })
+    expect(body).not.toHaveProperty('variants')
+    expect(body).not.toHaveProperty('dispatch')
+  })
+
+  it('skill source → the same one-step inline chain buildCreateRunBody sends', () => {
+    const body = buildBacklogItemBody({
+      task: 'fix the flake',
+      source: { source: 'skill', ref: 'om-fix' },
+      model: 'sonnet',
+      runner: 'claude',
+      defaultRunner: 'codex',
+      images: [],
+    })
+    expect(JSON.parse(JSON.stringify(body))).toEqual({
+      task: 'fix the flake',
+      steps: [{ id: 'task', name: 'om-fix', skill: 'om-fix', prompt: '{{task}}' }],
+      model: 'sonnet',
+      runner: 'claude',
+    })
+  })
+
+  it('images ride along; worktree/autonomous/generateFollowups are sent only when non-default', () => {
+    const body = buildBacklogItemBody({
+      task: 't',
+      source: { source: 'workflow', ref: 'quick-task' },
+      model: '',
+      runner: 'claude',
+      defaultRunner: 'claude',
+      images: [{ mediaType: 'image/png', data: 'aGk=' }],
+      worktree: false,
+      autonomous: true,
+      generateFollowups: false,
+    })
+    expect(JSON.parse(JSON.stringify(body))).toEqual({
+      task: 't',
+      workflow: 'quick-task',
+      images: [{ mediaType: 'image/png', data: 'aGk=' }],
+      worktree: false,
+      autonomous: true,
+      generateFollowups: false,
+    })
   })
 })
 
