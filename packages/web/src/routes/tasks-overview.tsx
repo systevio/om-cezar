@@ -21,12 +21,22 @@ import {
   WorkflowIcon,
 } from 'lucide-react'
 import * as React from 'react'
+import { useSearchParams } from 'react-router'
 import { Link, useNavigate } from '@/lib/project-router'
 
-import { archiveFinished, markAllRunsSeen, patchRun } from '@/api/client'
+import { archiveFinished, markAllRunsSeen, patchRun, removeBacklogItem, startBacklogItem } from '@/api/client'
 import { useRunUsage } from '@/api/global-events'
-import { queryKeys, useHealth, usePinRun, useReferenceProjectId, useRuns } from '@/api/queries'
-import type { RunRecord } from '@open-mercato/cezar-api-client'
+import {
+  queryKeys,
+  useBacklog,
+  useHealth,
+  usePinRun,
+  useReferenceProjectId,
+  useRuns,
+} from '@/api/queries'
+import type { BacklogItem, RunRecord } from '@open-mercato/cezar-api-client'
+import { BacklogList } from './backlog-list'
+import { startedRunPath } from './new-task-form'
 import { CenteredState } from '@/components/centered-state'
 import { DiffStatLabel } from '@/components/diff-stat'
 import { DirectionalUsage } from '@/components/directional-usage'
@@ -82,6 +92,12 @@ import { cn } from '@/lib/utils'
  * Below `md` the table becomes a stacked card list plus a New-task FAB — same rows, same order,
  * same data, only the framing changes (mockup `tasks-home.html`, mobile section).
  */
+
+/** The header's tab set, `ListView` plus the Backlog tab (spec 2026-09-19-task-backlog) — local
+ *  to this component on purpose, so `ListView` itself (shared with the sidebar quick-list,
+ *  `lib/task-groups.ts`) never has to learn about a state that holds no `RunRecord`s. */
+type OverviewView = ListView | 'backlog'
+
 export function TasksOverview({
   runs,
   view,
@@ -96,6 +112,12 @@ export function TasksOverview({
   expandedColumns = normalizeExpandedColumns(undefined),
   onToggleColumn = () => undefined,
   columnsPending = false,
+  backlogView = false,
+  onBacklogViewChange,
+  backlogItems,
+  onStartBacklogItem,
+  onDeleteBacklogItem,
+  startingBacklogIds,
 }: {
   /** Undefined while `/api/runs` has not answered: the header renders, the body stays empty —
    *  an empty state before we know there are no runs would be a lie. */
@@ -122,6 +144,19 @@ export function TasksOverview({
   onToggleColumn?: (id: TaskColumnId) => void
   /** Prevent a shallow write before the authoritative workspace state can preserve siblings. */
   columnsPending?: boolean
+  /**
+   * The Backlog tab (spec 2026-09-19-task-backlog) — a THIRD, ORTHOGONAL header state layered
+   * on top of `view`/`onViewChange` rather than folded into `ListView`: a backlog item is not a
+   * `RunRecord`, so it never reaches `sortRuns`/`bucketOf`/the sidebar's shared quick-list state
+   * (`lib/task-groups.ts`), and Active/Archived keep behaving exactly as before whether or not
+   * this tab is selected.
+   */
+  backlogView?: boolean
+  onBacklogViewChange?: (on: boolean) => void
+  backlogItems?: BacklogItem[]
+  onStartBacklogItem?: (id: string) => void
+  onDeleteBacklogItem?: (id: string) => void
+  startingBacklogIds?: ReadonlySet<string>
 }) {
   const [query, setQuery] = React.useState('')
   const all = runs ?? []
@@ -145,6 +180,18 @@ export function TasksOverview({
   // nowhere to show its result — and one that outlives the view, since un-archiving would then
   // drop the task at the top of the active list by a click that looked like it did nothing.
   const pinToggle = view === 'archived' ? undefined : onTogglePin
+  // The header's current tab, folding the orthogonal Backlog state in — see the prop doc above
+  // for why `view` itself never learns about `'backlog'`.
+  const overviewView: OverviewView = backlogView ? 'backlog' : view
+  const selectOverviewTab = (next: OverviewView) => {
+    if (next === 'backlog') {
+      onBacklogViewChange?.(true)
+      return
+    }
+    onBacklogViewChange?.(false)
+    onViewChange(next)
+  }
+  const backlogCount = backlogItems?.length ?? 0
 
   return (
     <div data-route="tasks" className="flex min-h-full flex-col">
@@ -153,18 +200,23 @@ export function TasksOverview({
       <header className="sticky top-0 z-10 hidden h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-5 md:flex">
         <h1 className="text-base font-semibold">Tasks</h1>
         <div className="inline-flex gap-0.5 rounded-md bg-muted p-[3px]">
-          <OverviewTab view="active" current={view} onSelect={onViewChange} count={counts.active}>
+          <OverviewTab view="active" current={overviewView} onSelect={selectOverviewTab} count={counts.active}>
             Active
           </OverviewTab>
-          <OverviewTab view="archived" current={view} onSelect={onViewChange} count={counts.archived}>
+          <OverviewTab view="archived" current={overviewView} onSelect={selectOverviewTab} count={counts.archived}>
             Archived
           </OverviewTab>
+          {onBacklogViewChange ? (
+            <OverviewTab view="backlog" current={overviewView} onSelect={selectOverviewTab} count={backlogCount}>
+              Backlog
+            </OverviewTab>
+          ) : null}
         </div>
         <div className="flex-1" />
         {/* Count-gated, like the broom beside it: offered only while there is unread history to
             clear (#unread-done-items). Archived runs are never unread, so this only ever lights
             on the Active tab in practice — no need to also gate on `view`. */}
-        {unread > 0 ? (
+        {!backlogView && unread > 0 ? (
           <Button
             type="button"
             variant="ghost"
@@ -177,7 +229,7 @@ export function TasksOverview({
           </Button>
         ) : null}
         {/* Only when there is something to sweep, like the legacy header's count-gated broom. */}
-        {view === 'active' && finished > 0 ? (
+        {!backlogView && view === 'active' && finished > 0 ? (
           <Button
             type="button"
             variant="ghost"
@@ -205,8 +257,51 @@ export function TasksOverview({
         </div>
       </header>
 
+      {/* Below `md` the desktop header above is hidden entirely (the shell's own top bar says
+          "Tasks", and the drawer carries Active/Archived) — with nothing here, a phone would have
+          no way to reach or leave the Backlog tab at all. This is the one mobile-only entry point,
+          scoped to this route rather than the shared drawer/shell. */}
+      {onBacklogViewChange ? (
+        <div className="flex items-center border-b border-border bg-background px-3 py-2 md:hidden">
+          {backlogView ? (
+            <button
+              type="button"
+              data-slot="mobile-backlog-exit"
+              onClick={() => onBacklogViewChange(false)}
+              className="flex items-center gap-1 text-[13px] font-medium text-foreground"
+            >
+              <ChevronsLeftIcon aria-hidden="true" className="size-3.5" />
+              Active
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-slot="mobile-backlog-entry"
+              onClick={() => onBacklogViewChange(true)}
+              className="ml-auto flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground"
+            >
+              Backlog
+              {backlogCount > 0 ? (
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-foreground">
+                  {backlogCount}
+                </span>
+              ) : null}
+              <ChevronsRightIcon aria-hidden="true" className="size-3.5" />
+            </button>
+          )}
+        </div>
+      ) : null}
+
       <div className="flex flex-1 flex-col p-3 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-5 md:pb-5">
-        {runs === undefined ? null : visible.length === 0 ? (
+        {backlogView ? (
+          <BacklogList
+            items={backlogItems}
+            onStart={(id) => onStartBacklogItem?.(id)}
+            onDelete={(id) => onDeleteBacklogItem?.(id)}
+            startingIds={startingBacklogIds}
+            now={now}
+          />
+        ) : runs === undefined ? null : visible.length === 0 ? (
           <TasksEmptyState view={view} query={query} />
         ) : (
           <>
@@ -286,7 +381,7 @@ export function TasksOverview({
           </>
         )}
 
-        {strips.map((group) => (
+        {backlogView ? null : strips.map((group) => (
           <div
             key={group.groupId}
             data-slot="compare-strip"
@@ -375,9 +470,9 @@ function OverviewTab({
   count,
   children,
 }: {
-  view: ListView
-  current: ListView
-  onSelect: (view: ListView) => void
+  view: OverviewView
+  current: OverviewView
+  onSelect: (view: OverviewView) => void
   count: number
   children: React.ReactNode
 }) {
@@ -1084,6 +1179,54 @@ export function TasksOverviewRoute() {
   const metricVisibility = usageMetricVisibility(health.data)
   const [view, setView] = useListView()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  // The Backlog tab (spec 2026-09-19-task-backlog): local state, seeded once from the composer's
+  // "Save to backlog" redirect (`/?view=backlog`) so the saved item is visible on arrival —
+  // deliberately NOT synced into `useListView()`'s shared Active/Archived state (see the prop doc
+  // on `TasksOverview`), so leaving this tab always restores whichever of those was active.
+  const [searchParams] = useSearchParams()
+  const [showBacklog, setShowBacklog] = React.useState(() => searchParams.get('view') === 'backlog')
+  // Active/Archived also has a second control on phones: the drawer's own sidebar quick-list
+  // tabs (`useListView()`, shared with the mobile nav overlay), which write `view` directly and
+  // know nothing about `showBacklog`. Without this, picking "Active" from the DRAWER while the
+  // page body is showing the Backlog tab would leave the two disagreeing — the drawer highlights
+  // Active, the page keeps showing backlog rows. `selectOverviewTab` (in `TasksOverview`) already
+  // clears `showBacklog` in the same click as its own `view` changes, so this only ever fires for
+  // an EXTERNAL change — the no-op double-clear on the in-component path is harmless.
+  const previousView = React.useRef(view)
+  React.useEffect(() => {
+    if (view !== previousView.current) {
+      previousView.current = view
+      setShowBacklog(false)
+    }
+  }, [view])
+  const backlog = useBacklog()
+  // A SET, not one id: starting item B while item A's request is still in flight must not
+  // re-enable A's row (a scalar "the one starting id" would, letting a quick second click on A
+  // race the server's own documented double-Start window).
+  const [startingBacklogIds, setStartingBacklogIds] = React.useState<ReadonlySet<string>>(new Set())
+  const startItem = useMutation({
+    mutationFn: startBacklogItem,
+    onMutate: (id: string) => setStartingBacklogIds((prev) => new Set(prev).add(id)),
+    onSuccess: (run) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.backlog })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
+      navigate(startedRunPath(run))
+    },
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+    onSettled: (_data, _error, id) =>
+      setStartingBacklogIds((prev) => {
+        if (!prev.has(id)) return prev
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      }),
+  })
+  const deleteItem = useMutation({
+    mutationFn: removeBacklogItem,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.backlog }),
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+  })
   const archive = useMutation({
     mutationFn: archiveFinished,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all }),
@@ -1145,6 +1288,12 @@ export function TasksOverviewRoute() {
         expandedColumns={taskTableColumns.expandedColumns}
         onToggleColumn={taskTableColumns.toggleColumn}
         columnsPending={taskTableColumns.isPending}
+        backlogView={showBacklog}
+        onBacklogViewChange={setShowBacklog}
+        backlogItems={backlog.data}
+        onStartBacklogItem={(id) => startItem.mutate(id)}
+        onDeleteBacklogItem={(id) => deleteItem.mutate(id)}
+        startingBacklogIds={startingBacklogIds}
       />
     </ReferenceStatusProvider>
   )

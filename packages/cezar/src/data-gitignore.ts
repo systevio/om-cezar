@@ -30,6 +30,8 @@ export const DATA_GITIGNORE_ENTRIES = [
   'drafts/', // unsent composer text + pasted screenshots (#939) — never in git history
   'todos.json',
   'todos.json.tmp',
+  'backlog.json', // saved-but-undispatched task drafts (spec 2026-09-19-task-backlog)
+  'backlog.json.tmp',
   'launch-key',
   'automations.json',
   'automations.json.tmp',

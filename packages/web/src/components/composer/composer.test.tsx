@@ -184,6 +184,54 @@ describe('failure restores the draft (nothing the user typed is ever lost)', () 
   })
 })
 
+describe('Save to backlog (spec 2026-09-19-task-backlog)', () => {
+  it('is absent when onSaveToBacklog is not passed', () => {
+    renderComposer()
+    expect(screen.queryByRole('button', { name: 'Save to backlog' })).toBeNull()
+  })
+
+  it('renders disabled on an empty draft, enables once text is typed', () => {
+    const onSaveToBacklog = vi.fn(() => Promise.resolve({}))
+    const { textarea } = renderComposer({ onSaveToBacklog })
+    const button = screen.getByRole('button', { name: 'Save to backlog' }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    type(textarea, 'write the release notes')
+    expect(button.disabled).toBe(false)
+  })
+
+  it('click saves the trimmed text, clears the draft optimistically, and does not call onSubmit', () => {
+    const onSaveToBacklog = vi.fn(() => Promise.resolve({}))
+    const { onSubmit, textarea } = renderComposer({ onSaveToBacklog })
+    type(textarea, '  write the release notes  ')
+    fireEvent.click(screen.getByRole('button', { name: 'Save to backlog' }))
+    expect(onSaveToBacklog).toHaveBeenCalledWith('write the release notes', [])
+    expect(textarea.value).toBe('')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('a rejection restores the draft, same as a failed Start', async () => {
+    const onSaveToBacklog = vi.fn(() => Promise.reject(new Error('could not save — try again')))
+    const { textarea } = renderComposer({ onSaveToBacklog })
+    type(textarea, 'my draft task')
+    fireEvent.click(screen.getByRole('button', { name: 'Save to backlog' }))
+    expect(textarea.value).toBe('') // optimistic
+    await waitFor(() => expect(textarea.value).toBe('my draft task'))
+    expect(screen.getByText('could not save — try again')).toBeTruthy()
+  })
+
+  it('pasted attachments ride the save the same way they ride a submit', async () => {
+    const onSaveToBacklog = vi.fn(() => Promise.resolve({}))
+    const { textarea } = renderComposer({ onSaveToBacklog })
+    paste(textarea, [pngFile('shot.png', [9, 9])])
+    await screen.findByLabelText('Remove pasted image')
+    type(textarea, 'see screenshot')
+    fireEvent.click(screen.getByRole('button', { name: 'Save to backlog' }))
+    expect(onSaveToBacklog).toHaveBeenCalledWith('see screenshot', [
+      { mediaType: 'image/png', data: btoa(String.fromCharCode(9, 9)) },
+    ])
+  })
+})
+
 describe('attachments — attach, paste, thumbnails, caps (legacy parity)', () => {
   it('pasted screenshots become removable thumbnails and ride the submit', async () => {
     const { onSubmit, textarea } = renderComposer()

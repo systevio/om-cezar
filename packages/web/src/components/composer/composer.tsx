@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowUpIcon, CheckIcon, MicIcon, PaperclipIcon, XIcon } from 'lucide-react'
+import { ArchiveIcon, ArrowUpIcon, CheckIcon, MicIcon, PaperclipIcon, XIcon } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -55,6 +55,13 @@ export interface ComposerProps {
   /** Deliver the message. Rejection = the message did NOT land: the composer toasts the error
    *  and restores the draft (nothing the user typed is ever lost). */
   onSubmit: (text: string, attachments: AttachmentInput[]) => Promise<unknown>
+  /**
+   * Save the current draft to the backlog instead of starting it (spec
+   * 2026-09-19-task-backlog): a third action beside Start/Plan, rendered only when given — a
+   * host that omits it gets no extra button and behaves exactly as it always has. Shares the
+   * optimistic-clear/restore-on-error contract `onSubmit` gets, and the same empty-draft guard.
+   */
+  onSaveToBacklog?: (text: string, attachments: AttachmentInput[]) => Promise<unknown>
   /**
    * Controlled text (pass BOTH or neither): the /new host owns the draft so it survives
    * navigation (spec: "Queued form state survives navigation"). Every internal edit — typing,
@@ -120,6 +127,7 @@ const QUICK_REPLIES: Record<string, string> = { KeyA: 'Yes, approved.', KeyC: 'C
 
 export function Composer({
   onSubmit,
+  onSaveToBacklog,
   value,
   onValueChange,
   images: controlledImages,
@@ -387,6 +395,41 @@ export function Composer({
     void send(draftText, draftImages, true)
   }, [allowEmptySubmit, images, send, text])
 
+  // The backlog twin of `send`/`submitDraft` above — same optimistic clear, same on-error
+  // restore, same empty-draft guard (never `allowEmptySubmit`: a backlog item with nothing in it
+  // is not a saved task). Kept a full duplicate rather than a `target` parameter on `send`: the
+  // two actions save vs. dispatch a task, an important enough difference to read at the call site
+  // rather than infer from an argument.
+  const saveToBacklog = useCallback(
+    async (draftText: string, draftImages: PendingAttachment[], restoreOnError: boolean) => {
+      if (!onSaveToBacklog || disabled || busy) return
+      if (draftText.trim() === '' && draftImages.length === 0) return
+      setBusy(true)
+      try {
+        await onSaveToBacklog(draftText.trim(), draftImages.map(toAttachmentInput))
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        if (restoreOnError) {
+          setText((current) => (current === '' ? draftText : `${draftText}\n${current}`))
+          setImages((current) => [...draftImages, ...current].slice(0, MAX_ATTACHMENTS))
+        }
+      } finally {
+        setBusy(false)
+      }
+    },
+    [busy, disabled, onSaveToBacklog],
+  )
+
+  const saveDraftToBacklog = useCallback(() => {
+    if (!onSaveToBacklog || (text.trim() === '' && images.length === 0)) return
+    const draftText = text
+    const draftImages = images
+    setText('')
+    setImages([], 'submit')
+    setTrigger(null)
+    void saveToBacklog(draftText, draftImages, true)
+  }, [images, onSaveToBacklog, saveToBacklog, text])
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (menuOpen) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -583,6 +626,23 @@ export function Composer({
                   <div data-slot="composer-footer-end" className="flex items-center gap-1.5">
                     {footerEnd}
                   </div>
+                ) : null}
+                {onSaveToBacklog ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Save to backlog"
+                    title="Save to backlog — no worktree or slot used until you start it"
+                    disabled={
+                      disabled || busy || (text.trim() === '' && images.length === 0)
+                    }
+                    className="h-8 gap-1.5 px-2.5 text-xs font-medium text-muted-foreground"
+                    onClick={saveDraftToBacklog}
+                  >
+                    <ArchiveIcon aria-hidden="true" className="size-3.5" />
+                    Save to backlog
+                  </Button>
                 ) : null}
                 <Button
                   type="button"

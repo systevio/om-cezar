@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GlobalEventsProvider } from '@/api/global-events'
 import { queryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
-import type { ProcessUsage, RunRecord } from '@open-mercato/cezar-api-client'
+import type { BacklogItem, ProcessUsage, RunRecord } from '@open-mercato/cezar-api-client'
 import { ListViewProvider } from '@/components/list-view'
 import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { TasksOverview, TasksOverviewRoute } from '@/routes/tasks-overview'
@@ -29,6 +29,23 @@ function run(over: Partial<RunRecord> = {}): RunRecord {
     tokensUsed: 0,
     archived: false,
     steps: [],
+    ...over,
+  }
+}
+
+let backlogSeq = 0
+
+function backlogItem(over: Partial<BacklogItem> = {}): BacklogItem {
+  backlogSeq += 1
+  return {
+    id: `b${backlogSeq}`,
+    createdAt: ago(60_000),
+    title: `Backlog item ${backlogSeq}`,
+    // `systemPrompt` is a required-but-possibly-undefined key on the wire's OUTPUT type (the
+    // transform behind `createRunInputBaseSchema.systemPrompt` widens `?:` to `string | undefined`
+    // rather than dropping the key) — present here so this literal matches what a real parsed
+    // `BacklogItem` actually carries.
+    input: { task: `task ${backlogSeq}`, workflow: 'quick-task', systemPrompt: undefined },
     ...over,
   }
 }
@@ -825,6 +842,120 @@ describe('TasksOverview — header', () => {
 
     fireEvent.change(search, { target: { value: '' } })
     expect(document.querySelectorAll('[data-slot="task-table-row"]')).toHaveLength(2)
+  })
+})
+
+describe('TasksOverview — Backlog tab (spec 2026-09-19-task-backlog)', () => {
+  const desktopBacklogTab = () =>
+    document.querySelector<HTMLButtonElement>('[data-slot="overview-tab"][data-view="backlog"]')
+
+  it('is absent unless onBacklogViewChange is wired, and never touches Active/Archived counts', () => {
+    renderOverview({ runs: [run({ status: 'running' })] })
+    expect(desktopBacklogTab()).toBeNull()
+    expect(document.querySelector('[data-slot="mobile-backlog-entry"]')).toBeNull()
+  })
+
+  it('shows the tab with a count and reports a flip WITHOUT calling onViewChange', () => {
+    const onBacklogViewChange = vi.fn()
+    const { onViewChange } = renderOverview({
+      runs: [run({ status: 'running' })],
+      backlogItems: [backlogItem({ id: 'b1' }), backlogItem({ id: 'b2' })],
+      onBacklogViewChange,
+    })
+    const tab = desktopBacklogTab()
+    expect(tab?.textContent).toBe('Backlog2')
+    fireEvent.click(tab as HTMLButtonElement)
+    expect(onBacklogViewChange).toHaveBeenCalledWith(true)
+    expect(onViewChange).not.toHaveBeenCalled()
+  })
+
+  // Below `md` the desktop header is hidden entirely — the mobile-only entry/exit row
+  // (`mobile-backlog-entry`/`mobile-backlog-exit`) is the phone's only way in or out.
+  it('offers a mobile entry point that mirrors the desktop tab', () => {
+    const onBacklogViewChange = vi.fn()
+    renderOverview({ backlogItems: [backlogItem({ id: 'b1' })], onBacklogViewChange })
+    const entry = document.querySelector<HTMLButtonElement>('[data-slot="mobile-backlog-entry"]')
+    expect(entry?.textContent).toBe('Backlog1')
+    fireEvent.click(entry as HTMLButtonElement)
+    expect(onBacklogViewChange).toHaveBeenCalledWith(true)
+  })
+
+  it('offers a mobile exit while the tab is selected', () => {
+    const onBacklogViewChange = vi.fn()
+    // A non-zero Active count so the desktop tab's own name ("Active1") cannot collide with the
+    // mobile exit button's exact, count-free "Active".
+    renderOverview({
+      runs: [run({ status: 'running' })],
+      backlogView: true,
+      onBacklogViewChange,
+      backlogItems: [],
+    })
+    const exit = screen.getByRole('button', { name: 'Active' })
+    expect(exit.getAttribute('data-slot')).toBe('mobile-backlog-exit')
+    fireEvent.click(exit)
+    expect(onBacklogViewChange).toHaveBeenCalledWith(false)
+  })
+
+  it('selecting Active/Archived while on Backlog turns the tab off again', () => {
+    const onBacklogViewChange = vi.fn()
+    renderOverview({ backlogView: true, onBacklogViewChange })
+    fireEvent.click(screen.getByRole('button', { name: /^Archived/ }))
+    expect(onBacklogViewChange).toHaveBeenCalledWith(false)
+  })
+
+  it('renders the BacklogList instead of the runs table/cards while selected', () => {
+    renderOverview({
+      runs: [run({ id: 'active-run' })],
+      backlogView: true,
+      onBacklogViewChange: vi.fn(),
+      backlogItems: [backlogItem({ id: 'b1', title: 'Write the release notes' })],
+    })
+    expect(screen.getByText('Write the release notes')).toBeTruthy()
+    expect(tableRow('active-run')).toBeNull()
+    expect(document.querySelector('[data-slot="tasks-table"]')).toBeNull()
+  })
+
+  it('▶ Start and delete call back with the item id', () => {
+    const onStartBacklogItem = vi.fn()
+    const onDeleteBacklogItem = vi.fn()
+    renderOverview({
+      backlogView: true,
+      onBacklogViewChange: vi.fn(),
+      backlogItems: [backlogItem({ id: 'b1', title: 'Write the release notes' })],
+      onStartBacklogItem,
+      onDeleteBacklogItem,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(onStartBacklogItem).toHaveBeenCalledWith('b1')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(onDeleteBacklogItem).toHaveBeenCalledWith('b1')
+  })
+
+  it('disables only the starting row — a Set, so a second in-flight Start never re-enables the first', () => {
+    // Regression: a single scalar "the one starting id" would flip to 'b' and re-enable 'a'
+    // even though its own request has not settled. Two items, only 'a' in flight: 'a' disabled,
+    // 'b' still clickable.
+    renderOverview({
+      backlogView: true,
+      onBacklogViewChange: vi.fn(),
+      backlogItems: [backlogItem({ id: 'a', title: 'First' }), backlogItem({ id: 'b', title: 'Second' })],
+      startingBacklogIds: new Set(['a']),
+    })
+    const starts = screen.getAllByRole('button', { name: 'Start' }) as HTMLButtonElement[]
+    expect(starts).toHaveLength(2)
+    expect(starts[0]?.disabled).toBe(true) // 'First' (a) — mid-flight
+    expect(starts[1]?.disabled).toBe(false) // 'Second' (b) — untouched
+  })
+
+  it('shows the empty state once the list has answered empty', () => {
+    renderOverview({ backlogView: true, onBacklogViewChange: vi.fn(), backlogItems: [] })
+    expect(screen.getByText('Nothing backlogged yet')).toBeTruthy()
+  })
+
+  it('renders nothing while the list has not answered yet (undefined, not a false empty state)', () => {
+    renderOverview({ backlogView: true, onBacklogViewChange: vi.fn(), backlogItems: undefined })
+    expect(screen.queryByText('Nothing backlogged yet')).toBeNull()
+    expect(document.querySelector('[data-slot="backlog-row"]')).toBeNull()
   })
 })
 

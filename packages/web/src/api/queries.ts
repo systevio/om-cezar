@@ -50,6 +50,7 @@ import {
   getSkills,
   getSkillsWhenReady,
   getTodos,
+  getBacklog,
   getUiState,
   getWorkflows,
   getWorkspaceConfig,
@@ -147,6 +148,9 @@ export const queryKeys = {
   },
   get todos() {
     return [queryScope(), 'todos'] as const
+  },
+  get backlog() {
+    return [queryScope(), 'backlog'] as const
   },
   get workflows() {
     return [queryScope(), 'workflows'] as const
@@ -998,6 +1002,17 @@ export function useTodos(enabled = true) {
   return useQuery({
     queryKey: queryKeys.todos,
     queryFn: ({ signal }) => getTodos({ signal }),
+    enabled,
+  })
+}
+
+/** The Backlog tab's list (spec 2026-09-19-task-backlog). No SSE push behind it — unlike the
+ *  inbox, a save/delete/start already invalidates this key at the call site, so a background
+ *  poll would only add unused traffic. */
+export function useBacklog(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.backlog,
+    queryFn: ({ signal }) => getBacklog({ signal }),
     enabled,
   })
 }

@@ -227,6 +227,9 @@ function serve(overrides: {
   createRun?: unknown
   /** Non-2xx `POST /api/v1/runs` answers (the auto-start failure path). */
   createRunStatus?: number
+  /** `POST /api/v1/backlog` — the composer's "Save to backlog" button (spec
+   *  2026-09-19-task-backlog). */
+  createBacklogItem?: unknown
   /** What `GET /api/v1/launch-key` answers — the bookmarklet auto-start secret. */
   launchKey?: string
   /** `POST /api/v1/plan` — a payload, or a handler for delayed/failing answers. */
@@ -250,6 +253,7 @@ function serve(overrides: {
     uiStateStatus: 200,
     createRun: { id: 'r1' },
     createRunStatus: 201,
+    createBacklogItem: { id: 'b1', title: 'saved task', createdAt: '2026-09-19T00:00:00.000Z' },
     launchKey: 'k-real',
     plan: PLAN,
     saveWorkflow: [{ status: 201, body: { path: '.ai/cezar/workflows/my-chain.yaml', name: 'my chain' } }],
@@ -293,6 +297,7 @@ function serve(overrides: {
       if (url === '/api/v1/ui-state' && method === 'GET') return json(data.uiState, data.uiStateStatus)
       if (url === '/api/v1/ui-state' && method === 'PUT') return json(body ?? {})
       if (url === '/api/v1/runs' && method === 'POST') return json(data.createRun, data.createRunStatus)
+      if (url === '/api/v1/backlog' && method === 'POST') return json(data.createBacklogItem, 201)
       if (url === '/api/v1/config' && method === 'GET')
         return typeof data.config === 'function'
           ? data.config()
@@ -356,6 +361,14 @@ const startTask = async () => {
 }
 
 const postedBody = () => requests.find((r) => r.method === 'POST' && r.url === '/api/v1/runs')?.body
+
+const saveTaskToBacklog = async () => {
+  fireEvent.click(screen.getByRole('button', { name: 'Save to backlog' }))
+  await waitFor(() => expect(requests.some((r) => r.method === 'POST' && r.url === '/api/v1/backlog')).toBe(true))
+}
+
+const postedBacklogBody = () =>
+  requests.find((r) => r.method === 'POST' && r.url === '/api/v1/backlog')?.body
 
 // ---- the hero surface -------------------------------------------------------------------------
 
@@ -1323,6 +1336,39 @@ describe('submit', () => {
     for (const body of persisted) expect(body).not.toHaveProperty('lastGenerateFollowups')
   })
 
+})
+
+describe('Save to backlog (spec 2026-09-19-task-backlog)', () => {
+  it('posts the current draft to POST /api/v1/backlog and lands on the Backlog tab', async () => {
+    serve()
+    renderNewTask()
+    await pillReady()
+    fireEvent.change(textarea(), { target: { value: 'write the release notes' } })
+    await saveTaskToBacklog()
+
+    expect(postedBacklogBody()).toEqual({ task: 'write the release notes', workflow: 'quick-task' })
+    expect(requests.some((r) => r.method === 'POST' && r.url === '/api/v1/runs')).toBe(false)
+    await waitFor(() => expect(location()).toBe('/?view=backlog'))
+  })
+
+  // #374, carried through the backlog detour: a task saved from an inbox-prefilled composer must
+  // still be able to mark that inbox entry started once Start actually creates the run.
+  it('?todo= prefill rides along to POST /api/v1/backlog, same as it does for a direct Start', async () => {
+    serve()
+    renderNewTask('/new?skill=deploy&ref=ship%20it&todo=t1')
+    await pillReady('deploy')
+    await saveTaskToBacklog()
+
+    expect((postedBacklogBody() as Record<string, unknown>).todoId).toBe('t1')
+  })
+
+  it('is not offered in Plan-first mode — a backlog item has no "review before Start" state', async () => {
+    serve()
+    renderNewTask()
+    await pillReady()
+    fireEvent.click(screen.getByRole('radio', { name: /Plan first|Planning…/ }))
+    expect(screen.queryByRole('button', { name: 'Save to backlog' })).toBeNull()
+  })
 })
 
 // ---- drafts & prefill ---------------------------------------------------------------------------

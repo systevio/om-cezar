@@ -11,7 +11,7 @@ import { useParams, useSearchParams } from 'react-router'
 
 import { Link, useNavigate } from '@/lib/project-router'
 
-import { createRun, getLaunchKey, postPlan, putConfig, putUiState } from '@/api/client'
+import { createBacklogItem, createRun, getLaunchKey, postPlan, putConfig, putUiState } from '@/api/client'
 import { useProjectScope } from '@/api/project-scope-context'
 import { hasAccountChoice, useAgentAccounts } from '@/api/agent-accounts'
 import {
@@ -79,6 +79,7 @@ import {
   type NewTaskDraft,
 } from './new-task-draft'
 import {
+  buildBacklogItemBody,
   buildCreateRunBody,
   modelsForRunner,
   modelCatalogStatus,
@@ -511,6 +512,42 @@ export function NewTaskRoute() {
     navigate(startedRunPath(created))
   }
 
+  /** "Save to backlog" (spec 2026-09-19-task-backlog): the composer's third action, saving the
+   *  draft without dispatching it — no worktree, no queue slot, no run — until a later "▶
+   *  Start" from the Backlog tab. Deliberately does NOT gate on `providersReady`: saving a task
+   *  for later needs no connected agent yet, only a known runner id to shape the body with. */
+  const saveToBacklog = async (text: string, images: AttachmentInput[]) => {
+    if (runner === null) {
+      throw new Error('Connect an agent provider before saving a task.')
+    }
+    if (!sourcesReady) {
+      throw new Error('Still loading workflows and skills — try again in a second.')
+    }
+    const item = await createBacklogItem(
+      buildBacklogItemBody({
+        task: text,
+        source,
+        model,
+        modelsLocked,
+        runner,
+        runnerExplicit: draft.runner !== null,
+        agentProfile,
+        defaultRunner,
+        images,
+        worktree: worktreeOn,
+        autonomous: autonomousOn,
+        generateFollowups: generateFollowupsOn,
+        // #374, carried through the backlog detour: the entry leaves the inbox once Start
+        // actually creates the run (`item.input.todoId`, read by `POST .../:id/start`).
+        todoId: deepLink.todo,
+      }),
+    )
+    void queryClient.invalidateQueries({ queryKey: queryKeys.backlog })
+    clearStartedDraft(draftProjectId)
+    toast(`Saved “${item.title}” to the backlog.`)
+    navigate('/?view=backlog')
+  }
+
   /** ▶ Start on the reviewed plan: the (possibly edited) steps go INLINE, with the composer's
    *  current picker choices — legacy `startPlannedRun` semantics on the new surface. */
   const startPlanned = async () => {
@@ -601,6 +638,10 @@ export function NewTaskRoute() {
         <Composer
           ref={composerRef}
           onSubmit={submit}
+          // Plan-first mode routes Start through plan review before anything runs — a backlog
+          // item has no equivalent "review before Start" state, so saving one would silently
+          // skip the review the user explicitly opted into for this composer.
+          onSaveToBacklog={draft.planFirst ? undefined : saveToBacklog}
           value={draft.text}
           onValueChange={(text) => update({ text })}
           autoFocus

@@ -13,6 +13,11 @@ import type {
   UpdateAgentProfileInput,
   AutomationsResponse,
   AutomationCheck,
+  CreateBacklogItemInput,
+  CreateBacklogItemResponse,
+  ListBacklogResponse,
+  RemoveBacklogItemResponse,
+  StartBacklogItemResponse,
   AutomationCheckQueuedResponse,
   AutomationLogResponse,
   AutomationResponse,
@@ -1411,6 +1416,48 @@ export async function startTodo(
       json: Object.keys(body).length > 0 ? body : undefined,
     }),
     `/todos/${encodeURIComponent(id)}/start`,
+  )
+}
+
+// ---- task backlog (spec 2026-09-19-task-backlog) ---------------------------------------------
+
+/** The Backlog tab's list: saved-but-undispatched task drafts, newest first, started items
+ *  already excluded server-side. */
+export async function getBacklog(opts?: ReadOptions): Promise<ListBacklogResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].backlog.$get({ param: { projectId: queryScope() } }, init(opts)),
+    '/backlog',
+  )
+}
+
+/** The composer's "Save to backlog" button: persists the draft without dispatching it — no
+ *  worktree, no queue slot, no `RunRecord` — until a later "▶ Start". `input` is the exact shape
+ *  `buildCreateRunBody` already produces, minus `variants`/`dispatch` (Phase 2). */
+export async function createBacklogItem(input: CreateBacklogItemInput): Promise<CreateBacklogItemResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].backlog.$post({ param: { projectId: queryScope() }, json: input }),
+    '/backlog',
+  )
+}
+
+/** The Backlog tab's trash action. Idempotent server-side; a second call on the same id 404s. */
+export async function removeBacklogItem(id: string): Promise<RemoveBacklogItemResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].backlog[':id'].$delete({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+    }),
+    `/backlog/${encodeURIComponent(id)}`,
+  )
+}
+
+/** "▶ Start": hands the saved input to the exact same `startRun()` path `POST /runs` uses —
+ *  the answer is a plain `RunRecord`, indistinguishable from a direct composer launch. */
+export async function startBacklogItem(id: string): Promise<StartBacklogItemResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].backlog[':id'].start.$post({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+    }),
+    `/backlog/${encodeURIComponent(id)}/start`,
   )
 }
 
