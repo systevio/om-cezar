@@ -93,26 +93,28 @@ editing before Start, and any dependency-between-tasks modeling are explicitly o
 
 ## Progress
 
+PR: #6
+
 > Convention: `- [ ]` pending, `- [x]` done. Append ` — <commit sha>` when a step lands. Do not rename step titles.
 
 ### Phase 1: Backend — module, routes, shared helper
 
-- [ ] 1.1 `packages/contract/src/backlog.ts` — schemas and response types
-- [ ] 1.2 `packages/cezar/src/backlog.ts` + unit tests
-- [ ] 1.3 `/api/backlog/*` routes + shared `POST /runs` helpers + route tests
-- [ ] 1.4 `BACKWARD_COMPATIBILITY.md` + `data-gitignore.ts`
+- [x] 1.1 `packages/contract/src/backlog.ts` — schemas and response types — 5ce3a14c
+- [x] 1.2 `packages/cezar/src/backlog.ts` + unit tests — 5ce3a14c
+- [x] 1.3 `/api/backlog/*` routes + shared `POST /runs` helpers + route tests — 5ce3a14c
+- [x] 1.4 `BACKWARD_COMPATIBILITY.md` + `data-gitignore.ts` — 5ce3a14c
 
 ### Phase 2: Web — client, composer
 
-- [ ] 2.1 `client.ts`/`queries.ts`/`buildBacklogItemBody`
-- [ ] 2.2 Composer "Save to backlog" button + `new-task.tsx` wiring + tests
+- [x] 2.1 `client.ts`/`queries.ts`/`buildBacklogItemBody` — 92d338eb
+- [x] 2.2 Composer "Save to backlog" button + `new-task.tsx` wiring + tests — 92d338eb
 
 ### Phase 3: Web — Backlog tab
 
-- [ ] 3.1 `backlog-list.tsx`
-- [ ] 3.2 `tasks-overview.tsx` third tab + `TasksOverviewRoute` wiring + tests
+- [x] 3.1 `backlog-list.tsx` — a2a2e797
+- [x] 3.2 `tasks-overview.tsx` third tab + `TasksOverviewRoute` wiring + tests — a2a2e797
 
 ### Phase 4: Verification and handoff
 
-- [ ] 4.1 Full validation gate
+- [x] 4.1 Full validation gate
 - [ ] 4.2 PR, review pass, labels, summary comment
