@@ -49,7 +49,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
-import { RUNNER_IDS } from '../core/agent-runner.ts';
+import { RUNNER_IDS, type RunnerId } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
 import { discoverClaudeModels } from '../core/claude-model-catalog.ts';
@@ -82,6 +82,13 @@ import { SkillsUpdateConflictError, SkillsUpdateCoordinator, SkillsUpdateService
 import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
+import {
+  addBacklogItem,
+  markBacklogItemStarted,
+  readBacklog,
+  removeBacklogItem,
+} from '../backlog.ts';
+import { createBacklogItemSchema } from '@open-mercato/cezar-contract';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
 import {
   HistoryCursorError,
@@ -112,7 +119,7 @@ import {
   setRunDraftInputSchema,
   type DeleteDraftResponse,
 } from '@open-mercato/cezar-contract';
-import { toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
+import { makeRunTitle, toPastedContent, type PastedContent, type RunManager, type StartRunInput } from '../workflows/run.ts';
 import { removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { getBranches, getCommit, getDiff, getLog, getRepoInfo, getStatus } from './git.ts';
@@ -3776,6 +3783,58 @@ export function createApp(deps: ServerDeps) {
     }
   };
 
+  /**
+   * Resolve `workflow`/`steps` into a `WorkflowDef`, exactly the way `POST /runs` always has: an
+   * inline chain runs as an ad-hoc "(planned)" workflow (spec 008), a named workflow must exist in
+   * the catalog. Shared with `POST /api/backlog/:id/start` (spec 2026-09-19-task-backlog) so the
+   * two routes cannot silently drift on what "unknown workflow" means.
+   */
+  const resolveStartWorkflow = async (
+    repoRoot: string,
+    data: { workflow?: string; steps?: WorkflowDef['steps'] },
+  ): Promise<{ workflow: WorkflowDef } | { error: string; status: 400 | 404 }> => {
+    if (data.steps) {
+      const issue = stepsIssue(data.steps);
+      if (issue) return { error: issue, status: 400 };
+      return { workflow: { name: '(planned)', source: 'built-in', steps: data.steps } };
+    }
+    const { workflows } = await loadWorkflows(repoRoot);
+    const workflow = workflows.find((w) => w.name === data.workflow);
+    if (!workflow) return { error: `unknown workflow: ${data.workflow}`, status: 404 };
+    return { workflow };
+  };
+
+  /**
+   * The `StartRunInput` `RunManager.startRun()` needs, from a `POST /runs`-shaped body. Shared
+   * with `POST /api/backlog/:id/start` (spec 2026-09-19-task-backlog, Implementation Plan step 6)
+   * so the two routes cannot silently drift on what a "task" is allowed to carry.
+   */
+  const buildStartRunInput = (data: {
+    task: string;
+    model?: string;
+    runner?: RunnerId;
+    agentProfile?: string;
+    images?: Array<{ mediaType: string; data: string; name?: string }>;
+    systemPrompt?: string;
+    worktree?: boolean;
+    autonomous?: boolean;
+    generateFollowups?: boolean;
+    dispatch?: z.infer<typeof dispatchIntentSchema>;
+  }): StartRunInput => ({
+    task: data.task,
+    model: data.model,
+    runner: data.runner,
+    agentProfile: data.agentProfile,
+    images: data.images?.map((image) => toPastedContent(image)),
+    systemPrompt: data.systemPrompt,
+    worktree: data.worktree,
+    autonomous: data.autonomous,
+    // Opt-in inbox (#471): the capability is the ceiling, so a client asking for follow-ups on a
+    // server that has them off gets a plain `false` rather than an error.
+    generateFollowups: capabilities().followups ? data.generateFollowups : false,
+    ...(data.dispatch && capabilities().dispatch ? { dispatchIntent: data.dispatch } : {}),
+  });
+
   // ---- chained family: runs lifecycle + artifacts (project-scoped) ----
   const runsRoutes = new Hono<ProjectApiEnv>()
     .get('/runs', (c) => c.json(c.get('project').store.listRuns().map(withUsage)))
@@ -3843,21 +3902,9 @@ export function createApp(deps: ServerDeps) {
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
-      let workflow: WorkflowDef | undefined;
-      if (parsed.data.steps) {
-        // Inline chain (spec 008): an approved plan runs as an ad-hoc workflow.
-        const issue = stepsIssue(parsed.data.steps);
-        if (issue) return c.json({ error: issue }, 400);
-        workflow = {
-          name: '(planned)',
-          source: 'built-in',
-          steps: parsed.data.steps,
-        };
-      } else {
-        const { workflows } = await loadWorkflows(repoRoot);
-        workflow = workflows.find((w) => w.name === parsed.data.workflow);
-        if (!workflow) return c.json({ error: `unknown workflow: ${parsed.data.workflow}` }, 404);
-      }
+      const resolved = await resolveStartWorkflow(repoRoot, parsed.data);
+      if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+      const workflow = resolved.workflow;
       const fallback = parsed.data.runner ?? (await loadConfig(repoRoot)).defaultRunner;
       const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback));
       if (blocked) return c.json({ error: blocked }, 409);
@@ -3883,24 +3930,7 @@ export function createApp(deps: ServerDeps) {
           );
         }
       }
-      const images = parsed.data.images?.map((image) => toPastedContent(image));
-      const input = {
-        task: parsed.data.task,
-        model: parsed.data.model,
-        runner: parsed.data.runner,
-        agentProfile: parsed.data.agentProfile,
-        images,
-        systemPrompt: parsed.data.systemPrompt,
-        worktree: parsed.data.worktree,
-        autonomous: parsed.data.autonomous,
-        // Opt-in inbox (#471): the capability is the ceiling, so a client asking
-        // for follow-ups on a server that has them off gets a plain `false`
-        // rather than an error — the run is still perfectly valid without them.
-        // One decision here feeds the run record, the system prompt and
-        // CEZ_TODOS_FILE alike (RunManager.agentEnv).
-        generateFollowups: capabilities().followups ? parsed.data.generateFollowups : false,
-        ...(parsed.data.dispatch && capabilities().dispatch ? { dispatchIntent: parsed.data.dispatch } : {}),
-      };
+      const input = buildStartRunInput(parsed.data);
       if (variants > 1) {
         const runs = manager.startVariants(workflow, input, variants);
         // The entry points at the first variant — the thread the composer navigates to.
@@ -4994,6 +5024,92 @@ export function createApp(deps: ServerDeps) {
       },
     );
 
+  /** A `WorkflowDef` good enough for `makeRunTitle`'s heuristic when a backlog item is saved —
+   *  tolerant of a workflow name that does not resolve (Start re-validates for real; this is
+   *  cosmetic only, so a stand-in with no skill hint is an honest-enough fallback). */
+  const titleWorkflowStandIn = async (
+    repoRoot: string,
+    data: { workflow?: string; steps?: WorkflowDef['steps'] },
+  ): Promise<WorkflowDef> => {
+    if (data.steps) return { name: '(planned)', source: 'built-in', steps: data.steps };
+    const { workflows } = await loadWorkflows(repoRoot);
+    return (
+      workflows.find((w) => w.name === data.workflow) ?? {
+        name: data.workflow ?? 'quick-task',
+        source: 'built-in',
+        steps: [],
+      }
+    );
+  };
+
+  // ---- chained family: task backlog (spec 2026-09-19-task-backlog, project-scoped) ----
+  //
+  // Saved-but-undispatched task drafts — `backlog.json`, never `runs.json`/`RunRecord`. A backlog
+  // item becomes a real run (and only then gets a worktree/queue slot) at `POST …/:id/start`,
+  // which hands its stored input to the exact same `manager.startRun()` `POST /runs` calls, via
+  // the two helpers this family shares with it above (`resolveStartWorkflow`, `buildStartRunInput`).
+  const backlogRoutes = new Hono<ProjectApiEnv>()
+    .get('/backlog', async (c) => {
+      const items = await readBacklog(c.get('project').dataDir);
+      // Started items stay in the file as provenance (mirrors the inbox) but leave the Backlog
+      // tab, newest-first — the same ordering `todos.ts` leaves to its own list route's caller.
+      const visible = items
+        .filter((item) => !item.startedRunId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return c.json(visible);
+    })
+
+    .post('/backlog', jsonZodValidator(createBacklogItemSchema), async (c) => {
+      const { root: repoRoot, dataDir } = c.get('project');
+      const { title, ...input } = c.req.valid('json');
+      const resolvedTitle = title?.trim() || makeRunTitle(input.task, await titleWorkflowStandIn(repoRoot, input));
+      const item = await addBacklogItem(dataDir, { title: resolvedTitle, input });
+      return c.json(item, 201);
+    })
+
+    // Idempotent, like the inbox's Dismiss: a miss is a 404, never a silent no-op.
+    .delete('/backlog/:id', async (c) => {
+      const removed = await removeBacklogItem(c.get('project').dataDir, c.req.param('id'));
+      return removed ? c.json({ removed: true }) : c.json({ error: 'not found' }, 404);
+    })
+
+    // "▶ Start": reconstruct the same `StartRunInput` `POST /runs` would build from this body and
+    // hand it to the identical `manager.startRun()` call — every downstream mechanism (worktree
+    // allocation, the queue, `pump()`, `maxParallel`, task auto-naming) applies unmodified.
+    .post('/backlog/:id/start', async (c) => {
+      const { root: repoRoot, dataDir, manager } = c.get('project');
+      const id = c.req.param('id');
+      const items = await readBacklog(dataDir);
+      const item = items.find((entry) => entry.id === id);
+      if (!item) return c.json({ error: 'not found' }, 404);
+      // The same best-effort race `todos.ts`'s `/todos/:id/start` has always had: two concurrent
+      // Start calls can both pass this check and both create a run before either's
+      // `markBacklogItemStarted` (shared per-dataDir lock) resolves — the loser's stamp is
+      // dropped, not its run. Accepted on the same precedent; `RunManager.startRun` offers no
+      // hook to make create-and-stamp one atomic step.
+      if (item.startedRunId) return c.json({ error: 'already started' }, 409);
+
+      if (agentModelsLocked(repoRoot) && item.input.model?.trim()) {
+        return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
+      }
+      const resolved = await resolveStartWorkflow(repoRoot, item.input);
+      if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+      const workflow = resolved.workflow;
+      const fallback = item.input.runner ?? (await loadConfig(repoRoot)).defaultRunner;
+      const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback));
+      if (blocked) return c.json({ error: blocked }, 409);
+      if (item.input.agentProfile !== undefined) {
+        const account = await resolveWorkspaceProfile(fallback, item.input.agentProfile);
+        if ('error' in account) return c.json({ error: account.error }, 400);
+      }
+
+      const run = manager.startRun(workflow, buildStartRunInput(item.input));
+      // #374 provenance carries through a backlog detour exactly as it does a direct launch.
+      if (item.input.todoId) await noteTodoStarted(dataDir, item.input.todoId, run.id);
+      await markBacklogItemStarted(dataDir, id, run.id);
+      return c.json(run, 201);
+    });
+
   // ---- chained family: SSE streams (project-scoped) ----
   const sseRoutes = new Hono<ProjectApiEnv>()
     .get(
@@ -5751,6 +5867,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', openTargetsRoutes)
     .route('/', worktreesRoutes)
     .route('/', todosRoutes)
+    .route('/', backlogRoutes)
     .route('/', sseRoutes)
     .route('/', githubRoutes)
     .route('/', repoRoutes)
