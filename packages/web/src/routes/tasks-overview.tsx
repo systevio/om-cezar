@@ -257,6 +257,41 @@ export function TasksOverview({
         </div>
       </header>
 
+      {/* Below `md` the desktop header above is hidden entirely (the shell's own top bar says
+          "Tasks", and the drawer carries Active/Archived) — with nothing here, a phone would have
+          no way to reach or leave the Backlog tab at all. This is the one mobile-only entry point,
+          scoped to this route rather than the shared drawer/shell. */}
+      {onBacklogViewChange ? (
+        <div className="flex items-center border-b border-border bg-background px-3 py-2 md:hidden">
+          {backlogView ? (
+            <button
+              type="button"
+              data-slot="mobile-backlog-exit"
+              onClick={() => onBacklogViewChange(false)}
+              className="flex items-center gap-1 text-[13px] font-medium text-foreground"
+            >
+              <ChevronsLeftIcon aria-hidden="true" className="size-3.5" />
+              Active
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-slot="mobile-backlog-entry"
+              onClick={() => onBacklogViewChange(true)}
+              className="ml-auto flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground"
+            >
+              Backlog
+              {backlogCount > 0 ? (
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-foreground">
+                  {backlogCount}
+                </span>
+              ) : null}
+              <ChevronsRightIcon aria-hidden="true" className="size-3.5" />
+            </button>
+          )}
+        </div>
+      ) : null}
+
       <div className="flex flex-1 flex-col p-3 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-5 md:pb-5">
         {backlogView ? (
           <BacklogList
@@ -1151,6 +1186,20 @@ export function TasksOverviewRoute() {
   // on `TasksOverview`), so leaving this tab always restores whichever of those was active.
   const [searchParams] = useSearchParams()
   const [showBacklog, setShowBacklog] = React.useState(() => searchParams.get('view') === 'backlog')
+  // Active/Archived also has a second control on phones: the drawer's own sidebar quick-list
+  // tabs (`useListView()`, shared with the mobile nav overlay), which write `view` directly and
+  // know nothing about `showBacklog`. Without this, picking "Active" from the DRAWER while the
+  // page body is showing the Backlog tab would leave the two disagreeing — the drawer highlights
+  // Active, the page keeps showing backlog rows. `selectOverviewTab` (in `TasksOverview`) already
+  // clears `showBacklog` in the same click as its own `view` changes, so this only ever fires for
+  // an EXTERNAL change — the no-op double-clear on the in-component path is harmless.
+  const previousView = React.useRef(view)
+  React.useEffect(() => {
+    if (view !== previousView.current) {
+      previousView.current = view
+      setShowBacklog(false)
+    }
+  }, [view])
   const backlog = useBacklog()
   // A SET, not one id: starting item B while item A's request is still in flight must not
   // re-enable A's row (a scalar "the one starting id" would, letting a quick second click on A

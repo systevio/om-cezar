@@ -846,9 +846,13 @@ describe('TasksOverview — header', () => {
 })
 
 describe('TasksOverview — Backlog tab (spec 2026-09-19-task-backlog)', () => {
+  const desktopBacklogTab = () =>
+    document.querySelector<HTMLButtonElement>('[data-slot="overview-tab"][data-view="backlog"]')
+
   it('is absent unless onBacklogViewChange is wired, and never touches Active/Archived counts', () => {
     renderOverview({ runs: [run({ status: 'running' })] })
-    expect(screen.queryByRole('button', { name: /^Backlog/ })).toBeNull()
+    expect(desktopBacklogTab()).toBeNull()
+    expect(document.querySelector('[data-slot="mobile-backlog-entry"]')).toBeNull()
   })
 
   it('shows the tab with a count and reports a flip WITHOUT calling onViewChange', () => {
@@ -858,11 +862,38 @@ describe('TasksOverview — Backlog tab (spec 2026-09-19-task-backlog)', () => {
       backlogItems: [backlogItem({ id: 'b1' }), backlogItem({ id: 'b2' })],
       onBacklogViewChange,
     })
-    const tab = screen.getByRole('button', { name: /^Backlog/ })
-    expect(tab.textContent).toBe('Backlog2')
-    fireEvent.click(tab)
+    const tab = desktopBacklogTab()
+    expect(tab?.textContent).toBe('Backlog2')
+    fireEvent.click(tab as HTMLButtonElement)
     expect(onBacklogViewChange).toHaveBeenCalledWith(true)
     expect(onViewChange).not.toHaveBeenCalled()
+  })
+
+  // Below `md` the desktop header is hidden entirely — the mobile-only entry/exit row
+  // (`mobile-backlog-entry`/`mobile-backlog-exit`) is the phone's only way in or out.
+  it('offers a mobile entry point that mirrors the desktop tab', () => {
+    const onBacklogViewChange = vi.fn()
+    renderOverview({ backlogItems: [backlogItem({ id: 'b1' })], onBacklogViewChange })
+    const entry = document.querySelector<HTMLButtonElement>('[data-slot="mobile-backlog-entry"]')
+    expect(entry?.textContent).toBe('Backlog1')
+    fireEvent.click(entry as HTMLButtonElement)
+    expect(onBacklogViewChange).toHaveBeenCalledWith(true)
+  })
+
+  it('offers a mobile exit while the tab is selected', () => {
+    const onBacklogViewChange = vi.fn()
+    // A non-zero Active count so the desktop tab's own name ("Active1") cannot collide with the
+    // mobile exit button's exact, count-free "Active".
+    renderOverview({
+      runs: [run({ status: 'running' })],
+      backlogView: true,
+      onBacklogViewChange,
+      backlogItems: [],
+    })
+    const exit = screen.getByRole('button', { name: 'Active' })
+    expect(exit.getAttribute('data-slot')).toBe('mobile-backlog-exit')
+    fireEvent.click(exit)
+    expect(onBacklogViewChange).toHaveBeenCalledWith(false)
   })
 
   it('selecting Active/Archived while on Backlog turns the tab off again', () => {
