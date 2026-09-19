@@ -117,4 +117,6 @@ PR: #6
 ### Phase 4: Verification and handoff
 
 - [x] 4.1 Full validation gate
-- [ ] 4.2 PR, review pass, labels, summary comment
+- [x] 4.2 PR, review pass, labels, summary comment — review found 4 findings (todoId dropped on
+      backlog save, Save-to-backlog offered in Plan-first mode, a single-scalar starting-id race,
+      one doc inaccuracy), all fixed — 7f1d8cfa
