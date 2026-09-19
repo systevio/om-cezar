@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GlobalEventsProvider } from '@/api/global-events'
 import { queryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
-import type { ProcessUsage, RunRecord } from '@open-mercato/cezar-api-client'
+import type { BacklogItem, ProcessUsage, RunRecord } from '@open-mercato/cezar-api-client'
 import { ListViewProvider } from '@/components/list-view'
 import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { TasksOverview, TasksOverviewRoute } from '@/routes/tasks-overview'
@@ -29,6 +29,23 @@ function run(over: Partial<RunRecord> = {}): RunRecord {
     tokensUsed: 0,
     archived: false,
     steps: [],
+    ...over,
+  }
+}
+
+let backlogSeq = 0
+
+function backlogItem(over: Partial<BacklogItem> = {}): BacklogItem {
+  backlogSeq += 1
+  return {
+    id: `b${backlogSeq}`,
+    createdAt: ago(60_000),
+    title: `Backlog item ${backlogSeq}`,
+    // `systemPrompt` is a required-but-possibly-undefined key on the wire's OUTPUT type (the
+    // transform behind `createRunInputBaseSchema.systemPrompt` widens `?:` to `string | undefined`
+    // rather than dropping the key) — present here so this literal matches what a real parsed
+    // `BacklogItem` actually carries.
+    input: { task: `task ${backlogSeq}`, workflow: 'quick-task', systemPrompt: undefined },
     ...over,
   }
 }
@@ -825,6 +842,73 @@ describe('TasksOverview — header', () => {
 
     fireEvent.change(search, { target: { value: '' } })
     expect(document.querySelectorAll('[data-slot="task-table-row"]')).toHaveLength(2)
+  })
+})
+
+describe('TasksOverview — Backlog tab (spec 2026-09-19-task-backlog)', () => {
+  it('is absent unless onBacklogViewChange is wired, and never touches Active/Archived counts', () => {
+    renderOverview({ runs: [run({ status: 'running' })] })
+    expect(screen.queryByRole('button', { name: /^Backlog/ })).toBeNull()
+  })
+
+  it('shows the tab with a count and reports a flip WITHOUT calling onViewChange', () => {
+    const onBacklogViewChange = vi.fn()
+    const { onViewChange } = renderOverview({
+      runs: [run({ status: 'running' })],
+      backlogItems: [backlogItem({ id: 'b1' }), backlogItem({ id: 'b2' })],
+      onBacklogViewChange,
+    })
+    const tab = screen.getByRole('button', { name: /^Backlog/ })
+    expect(tab.textContent).toBe('Backlog2')
+    fireEvent.click(tab)
+    expect(onBacklogViewChange).toHaveBeenCalledWith(true)
+    expect(onViewChange).not.toHaveBeenCalled()
+  })
+
+  it('selecting Active/Archived while on Backlog turns the tab off again', () => {
+    const onBacklogViewChange = vi.fn()
+    renderOverview({ backlogView: true, onBacklogViewChange })
+    fireEvent.click(screen.getByRole('button', { name: /^Archived/ }))
+    expect(onBacklogViewChange).toHaveBeenCalledWith(false)
+  })
+
+  it('renders the BacklogList instead of the runs table/cards while selected', () => {
+    renderOverview({
+      runs: [run({ id: 'active-run' })],
+      backlogView: true,
+      onBacklogViewChange: vi.fn(),
+      backlogItems: [backlogItem({ id: 'b1', title: 'Write the release notes' })],
+    })
+    expect(screen.getByText('Write the release notes')).toBeTruthy()
+    expect(tableRow('active-run')).toBeNull()
+    expect(document.querySelector('[data-slot="tasks-table"]')).toBeNull()
+  })
+
+  it('▶ Start and delete call back with the item id', () => {
+    const onStartBacklogItem = vi.fn()
+    const onDeleteBacklogItem = vi.fn()
+    renderOverview({
+      backlogView: true,
+      onBacklogViewChange: vi.fn(),
+      backlogItems: [backlogItem({ id: 'b1', title: 'Write the release notes' })],
+      onStartBacklogItem,
+      onDeleteBacklogItem,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    expect(onStartBacklogItem).toHaveBeenCalledWith('b1')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(onDeleteBacklogItem).toHaveBeenCalledWith('b1')
+  })
+
+  it('shows the empty state once the list has answered empty', () => {
+    renderOverview({ backlogView: true, onBacklogViewChange: vi.fn(), backlogItems: [] })
+    expect(screen.getByText('Nothing backlogged yet')).toBeTruthy()
+  })
+
+  it('renders nothing while the list has not answered yet (undefined, not a false empty state)', () => {
+    renderOverview({ backlogView: true, onBacklogViewChange: vi.fn(), backlogItems: undefined })
+    expect(screen.queryByText('Nothing backlogged yet')).toBeNull()
+    expect(document.querySelector('[data-slot="backlog-row"]')).toBeNull()
   })
 })
 
